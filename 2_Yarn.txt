@@ -1,0 +1,48 @@
+YARN can be thought of as analgous of an operating system for a cluster.  A cluster is a set of loosely or tightly connected computers that work together to be viewed as a single system.  The cluster represents a collection of resources, such as compute, memory, disk-space and network bandwidth.  Similar to how an OS presides over the machine's resources and distributes them among competing processes, YARN allocates cluster resources among competing jobs.
+Here's where YARN sits in the hadoop stack
+
+
+Application Layer: || MapReduce||Spark||Tez||...||
+Compute Layer: ||YARN||
+Storage Layer" ||HDFS and HBase||
+
+Yarn is not novel in what it does:  there are other cluster managers like instance Apache Mesose, or Google's closed-source Borg Scheduler
+
+YARN stands for Yet Another Resource Manager.  It does 2 things:
+    - Manage the clusters resources(compute, network and memory)
+    - Schedule and monitor jobs
+YARN achieves these goals through two long-running daemons:
+    - Resource Manager
+    - Node Manager'
+    These two components work in master-slave relationship, where the Resource Manager(RM) is the master and the Node Managers are the slave.  A single RM runs in the cluster with one NM per machine.  Together, these two components make up the data-computation framework.
+
+Resource Manager:  The Resource Manager is the ultimate authority that arbitrates resources among all applications in the system.  It has two parts:
+    - Application Manager: Responsible for accepting job submissions and starting a container for an entity called the ApplicationMaster.  It also restarts the ApplicationMaster container if the container fails.
+    - Scheduler: Responsible for allocating resources such as disk, CPU and network running applications, subject to restrictions imposed by queues and capacity.  The scheduler does not monitor the applications nor does it initiate restarts on application or hardware failures.  Note: container in this context does not refer to docker containerization.  In the context of YARN container is an abstract notion that represents resources such as disk, memory, CPU, network and others.  A container grants rights to an application to use a specific amount of resources on a specific host.
+
+The resource Manager acts as a single point of failure.  If the machine hosting the RM goes down, mo jobs can be scheduled.  To mitigate this shortcoming high availability for YARN was introduced in Hadoop 2.4.  A pair of Resource Managers runs in Active/Standby configuration to achieve HA.  This way, if the active RM dies, the standby one becomes the active and the cluster continujes to function correctly.
+
+NodeManager:  An agent that runs on every machine in the cluster.  It is responsible for launching containers on the machine and managing the use of resources by the containers.
+
+Let's chat about how YARN operates
+Workflow
+First step of running a YARN app involves requesting the RM to create an Application Master process.  The client submits a job and the RM finds a Node Manager that can launch a container to host the AM process.  It can either run the job or request additional resources from the RM.  
+YARN apps run from a few seconds to several days.  The jobs to applications mapping can happen in 3 ways:
+- One job per application: simple
+- Several jobs per application: suitable for running several jobs(maybe related) as a workflow or in a single user session.  The benefit is that containers can be reused within jobs and intermediate data between jobs can be cached in memory
+- Perpetually running application: an app that acts as a coordinate keeps running, even forever and is shared amonst various users.  An always-on application master reduces the latency to execute a job because the overhead of starting application master is eliminated
+
+
+MapReduce1:  The first version of Hadoop, known as MapReduce1(MR1).  MR1 didn't have YARN and was limited only to MapReduce jobs.  MR1 design faltered at scale, and the idea of YARN was incorporated to introduce master/slave resource manager architecture.  This allowed the division of responsibilities allowing the overall system to scale beyond the limits of MR1.  YARN also helps with cluster resources being evenly distributed, increasing performance.
+
+
+Horizontal vs Vertical Scaling:
+Most Big data problems can't be solved on an ordinary machine.  Horizontal scaling refers to adding more machines onto the pool of resources.  Vertical scaling refers to adding more resources to an existing machine
+
+
+Scheduling:  One of the responsibilities of YARN is scheduling user jobs.  Scheduling is important because the cluster has finite resources to allocate to a users' jobs based on a policy.  Without scheduling, a rogue job could hog the entire resource cluster and starve other jobs of resources.  YARN comes with a choice of schedulers and configuration knobs.  3 YARN schedulers:
+- FIFO: first in first out.  Jobs are placed in a queue and executed in the order of their submission
+- Capacity Scheduler: Defines queues with each queue being allocated a fraction of the clusters resources.  A queue can be divided further into sub-queues in a hierarchy.  This is designed to support an organizational cluster to be shared amongst differetn departments and groups.  Within each queue the jobs are exectured FIFO.  A queue can eat into another queue's capacity if the other queue isnt utliizing resources, known as queue elasticity.  The borrowed capacity from a queue is returned only when the containers for a job from the other queue are complete.  Containers aren't abruptly killed when the lending queue requires its capacity back.  A job can be destined for a queue using the property mapreduce.job.queuename.  If this poperty is not set, the job is sent to the default queue.
+- Fair Scheduler: This attempts to allocate resources fairly among all running applications.  This can get complicated/sophisticated.  Queues can be assigned weights.  Fair scheduling allows for specific rules to be specified when placing jobs in queues.  The rules are tried one by one until a match occurs.
+
+Delay Scheduling: another property that can be set in the case of fair or capacity schedulers.  With delay scheduling activated, the scheduler doesn't loosen the data locality constraints immediately to schedule a container elsewhere, if a container can't be started on the same node on which the data lives.  Instead it waits for a configurable delay for an opportunity to start the container on the requested node.  This has the benefit of improving cluster efficiency.
