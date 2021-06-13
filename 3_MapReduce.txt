@@ -1,0 +1,266 @@
+MapReduce is a concatenation of 'map' and 'reduce' which aptly describes the two phases.  It's an implementation of the computing model introduced by Google in which data-parallel computations are executed on clusters of unreliable machines.  These systems automatically provide locality-aware scheduling, fault tolerance nad load balancing.  A large data set is divided among worker machines, when processing is complete the data from each machine is aggregated to present a final solution.
+
+MapReduce is a programming model used to process large data sets on a cluster of commodity machines by using a distributed algorithm.  At the end of the day, it's fundamentally batch processing that is not suitable for interactive analysis.  Queries typically take a long time.  Other tools, like Spark and Impala are better for query/interactive requirements.
+
+Map phase: Users specify a map function that processes a key/value pair to generate a set of intermediate key/value pairs
+Reduce phase: The reduce phase merges all intermediate values associated with the same intermediate key.
+
+Characteristics:  MapReduce programming model has these characteristics:
+- Distributed: MapReduce is a distributed framework consisting of clusters of commodity hardware which run map or reduce tasks
+- Parallel: The map and reduce tasks always work in parallel.
+- Fault tolerant: if any task fails it is rescheduled on a different node
+- Scalable: It can scale arbitrarily.  As the problem becomes bigger, more machnes can be added to solve the problem.  It can scale horizontally but not vertically
+
+Input/Output:
+This framework works exclusively with key value pairs.  The input to and output of both map and reduce phase consists of key value pairs.
+- Serializable: The framework requires both the key and value to be serializable and must implement the Writeable interface
+- Comparable: The framework sorts the output of the map phase before feeding it to the reduce phase.  Sorting requires keys comparable to each other and thus are required to implement the WritableComparable interface
+
+Map phase:  Maps are individual tasks that transform input records into intermediate records.  The transformed intermediate records do not need to be the same type as the input records.
+Reduce phase: The intermediate set of key values output by the maph phase are reduced to a smaller set of key value pairs by the reducers.
+
+MapReduce is effective at solving matrix multiplication, aggregation and group by SQL queries.  Problems that can be solved by MapReduce must lend themselves to parallelization
+
+Let's look at Hadoop's Java classes to see how map and reduce work in code.  The Map phase is implemented by a Java class called Mapper.  This inputs key/value pairs to set intermediate key/value pairs.  Conceptually, a mapper performs parsing, projection(selecting of interest form the imput) and filtering.  In java the class looks like this
+
+public class Mapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT> {
+    //...class body
+}
+
+The Mapper class can be used to write our custom derived mapper class.  If it contains a map() method, the maping logic is defined.  Here's the details of how the MapReduce paradigm operates:
+
+1. Each map task works on a single input split.  It writes its output to memory in a sicrular buffer.
+2. If the buffer fills, then a background thread spills the contents of the buffer on disk to a spill file.  The output map tasks is written to local disk on the node on which the map task runs.  The intermediate is never written to HDFS because it is temporary and will be discarded once the job completes successfully.
+3. Before the contents of a map task are written to disk they may be divided into partitions.  Map output is partitioned only when the number of reducers is greater than one.  The number of reducers for a job and the partition scheme can be controlled by the developer.  Data from each partition is destined for a specific reducer task.
+4. The data within each partition is sorted in-memory by key.  Sorting of data happens on the map side, not the reduce side.  The reduce side merges the already sorted data.  The data can only be sorted if the keys are keys can be compared to each other.  This is why the framework requires the key type output by the mapper function to implement the WriteableComparable interface.
+5. The output of the task can be summarized or rolled-up.
+6. The spill file has a cap on the maximum size.  Once that cap is hit a new spill file is created.
+7. When the map task finishes an output file is written out to the local disk of the node.  If spill files are present, then all are combined to form a single sorted output file for that partition.  The output of map tasks is then dumped directly to HDFS without sorting
+8. The combiner function is run on the spill files before the single output file is written out, provided the number of spill files is greater than 3
+9, The output file can optionally be compressed before it is written out to save disk space and network bandwidth
+
+The Java library MRUnit can be used to unit test MapReduce jobs.   MRUnit is not modern but it's fine for the example/
+
+    @Test
+    public void testMapper() throws IOException {
+
+        MapDriver<LongWritable, Text, Text, IntWritable> driver =
+                MapDriver.<LongWritable, Text, Text, IntWritable>newMapDriver()
+                        .withMapper(new CarMapper())
+                        .withInput(new LongWritable(0), new Text("BMW BMW Toyota"))
+                        .withInput(new LongWritable(0), new Text("Rolls-Royce Honda Honda"))
+                        .withOutput(new Text("bmw"), new IntWritable(1))
+                        .withOutput(new Text("bmw"), new IntWritable(1))
+                        .withOutput(new Text("toyota"), new IntWritable(1))
+                        .withOutput(new Text("rolls-royce"), new IntWritable(1))
+                        .withOutput(new Text("honda"), new IntWritable(2));
+
+        driver.runTest();
+    }
+The library uses the builder pattern to create an instance of a MapDriver, initialized with an instance of the CarMapper class.  We specify the input key value pairs with the withInput() method and then specify the expected output using the withOutput() method.
+
+
+Mapper Inputs:
+In reality the input to a MR job usually consists of several GBs of data.  That data is split among multiple map tasks.  Each map task works on a unit of data called the input split.  Hadoop divides the MR job input into equal sized chunks.  The number of map tasks spawned for a MR job is equal to the number of input splits
+
+The greater the number of input splits means more map tasks for a MR job.  In turn, the MR job processes faster because the map tasks work in parallel on individual splits.  Too many input splits come with a corresponding increase in the overhead for managing splits and creating map tasks.  Generally the HDFS block size(128) is considered a good split size.
+
+Instead of directly interfacing with input splits, Java classes represent the input and re responsibile for producing the input splits.  Hadoop can process different types of inputs, ranging from text files to databases.  Examples of input format classes are:
+- TextInputFormat
+- SequenceFileInputFormat
+- FixedLengthInputFormat
+- MultipleInputs
+
+Data Locality:
+Data in a Hadoop cluster can be placed on any machine.  The framework tries to schedule the map task on the same node that has the input data for that map task.  The optimal scenario is to feed the map task with its input data.  The framework tries to pick a node in a rack which has the data.  That way, the data is only moved over the network intra-rack.  Lastly, if that isn't possible an off-rack node is chosen to run the map task and an inter-rack data transfer occurs.
+
+Basically the nodes on the machines on the racks attempt to be as close as possible to increase efficiency, I think.
+
+
+Reducer:
+The next step in MapReduce is the reducer phase.  The reduce tasks works on the intermediate input produced by the map tasks.  The reducer tasks are independent of eachother, just like the mapper tasks; they do not communicate.  Reducer tasks to require intermediate key/value pairs produced by the mapper tasks input.
+
+Reducer refers to a node that runs the reducer task.  Each reducer processes data in its assigned partition.  The map tasks partition their output so that one partition can be assigned to one reducer task.  All records for a given key reside in a single partition allowing a single reduce task to process all data for a given key.  Partitions are only created when the number of reducers is greater than one.
+
+
+public class CarReducer extends Reducer<Text, IntWritable, Text, LongWritable> {
+
+    @Override
+    //One inputs to the reduce() method is the key of the type Text.  All values associated //////with this key will be processed by the same reduce task.
+
+    protected void reduce(Text key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
+        // Our goal is to count the cars of a particular brand,  We initialize a variable to hold the sume.
+        long sum = 0;
+        // We iterate over all the values associated with the key and sum them
+        for (IntWritable occurrence : values) {
+            sum += occurrence.get();
+        }
+        //Finally emit the key and the associated total sum
+        context.write(key, new LongWritable(sum));
+    }
+}
+
+
+How does the Reduce Task work? 
+1. A reduce task needs data from several mappers across the cluster.  Each map task has a partition of sorted data per reduction.  The data needs to be copied over to the destined reducer via HTTP.
+2. The reducer copies the relevant data for its partition from the output of potentially several mappers.  This is known as the copy phase.  A different subset of the intermediate key space is assigned to each reduce node.  These subsets(partitions) are the inputs to the reduce tasks.  The copied data resides in memory or on disk on the reducer node.  The reducer task does not wait for all map tasks to finish, but rather starts to copy in parallel from finished map tasks.
+3. The process of sorting map outputs by key and moving them to the reducers is known as Shuffle and Sort.  Sorting happens on the map side; this reduces the side copies.  Once finished, copying the output from different mappers needs to merge the sorted mapper outputs.  The reducer invokes a new instance of the reduce function.  it then is sorted by key.
+4. The merge step is called sort, even though it happens at the mapper phase.
+5. In the reduce step, the reduction function is invoked for each key and its associated list of values.
+6. Other nuances of the reduce phase:
+    - Mapper outputs are spilled to disk if they can't fit into the JVM of the reduce task
+    - The combiner function can be invoked to reduce the amount of data written to the disk
+    - If the mapper output is compressed it needs to decrompress in memory.
+
+
+Testing Reducer:
+We can write a unit test case for our reducer class CarReducer
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mrunit.mapreduce.ReduceDriver;
+import org.apache.hadoop.mrunit.mapreduce.MapDriver;
+import org.junit.Test;
+
+
+import java.io.IOException;
+import java.util.Arrays;
+
+public class TestCarReducer {
+
+    public static void main(String[] args) throws IOException {
+        (new TestCarReducer()).testReducer();
+    }
+
+
+    @Test
+    public void testReducer() throws IOException {
+
+        ReduceDriver<Text, IntWritable, Text, LongWritable> driver =
+                ReduceDriver.<Text, IntWritable, Text, LongWritable>newReduceDriver()
+                        .withReducer(new CarReducer())
+                        .withInput(new Text("bmw"), Arrays.asList(new IntWritable(1), new IntWritable(1)))
+                        .withInput(new Text("toyota"), Arrays.asList(new IntWritable(1)))
+                        .withInput(new Text("rolls-royce"), Arrays.asList(new IntWritable(1)))
+                        .withInput(new Text("honda"), Arrays.asList(new IntWritable(1), new IntWritable(1)))
+                        .withOutput(new Text("bmw"), new LongWritable(2))
+                        .withOutput(new Text("toyota"), new LongWritable(1))
+                        .withOutput(new Text("rolls-royce"), new LongWritable(1))
+                        .withOutput(new Text("honda"), new LongWritable(2));
+
+        driver.runTest();
+    }
+}
+
+
+Similar to InputFormat, the format of the written output of a MapReduce program is determined by a corresponding interface.  All output format classes implement the OutputFormat interface.  The default format is TextOutputFormat.  Other format classes include:
+- MultipleOutputFormat
+- SequenceFileAsBinaryOutputFormat
+- DBOutputFormat
+- NullOutputFormat 
+
+
+Testing MapReduce:
+Prior we have learned how to write a mapper and reducer class and their corresponding unit tests.  Ideally, we want to test our MapReduce job end to end.  This can be done by:
+- Using the ToolRunner class to run a MapReduce job on a local machine.  
+- Setup a Hadoop cluster on a local machine in pseudo distributed mode, then submit the job to the cluster
+- Submit the Mapreduce job nto an actual cluster consisting of many machines
+
+Let's try this.  Start the first option by writing a program that implements the Tool interface.
+
+public class CarCounterMrProgram extends Configured implements Tool{
+    // code of clas sbody
+}
+
+The input of this program will live on the local disk.  Create an object of type Configuration.
+
+We can write configuration for job and specify the input and output paths:
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.util.Tool;
+import org.apache.hadoop.util.ToolRunner;
+
+
+public class CarCounterMrProgram extends Configured implements Tool {
+
+    public static void main(String[] args) throws Exception {
+
+        CarMRInputGenerator.createTestData();
+        ToolRunner.run(new CarCounterMrProgram(), args);
+    }
+
+    @Override
+    public int run(String[] strings) throws Exception {
+
+        Configuration config = new Configuration();
+
+        // Set the configuration
+        config.set("fs.defaultFS", "file:///");
+        config.set("mapreduce.framework.name", "local");
+
+        // Set the jar class to execute as the entry point for MapReduce
+        Job job = new Job(config, "CarCounter");
+        job.setJarByClass(getClass());
+
+        // Create the input and output paths
+        Path input = new Path("output/cars.data");
+        Path output = new Path("output/results");
+
+        // Set the input and output paths for the job
+        FileInputFormat.addInputPath(job, input);
+        FileOutputFormat.setOutputPath(job, output);
+
+        // Specify the Mapper and Reducer classes
+        job.setMapperClass(CarMapper.class);
+        job.setReducerClass(CarReducer.class);
+
+        // Set the Mapper out key and value classes
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(IntWritable.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(IntWritable.class);
+
+        // Block until the job is complete  
+        job.waitForCompletion(true);
+        System.out.println("Job Completed.");
+        return 0;
+    }
+}
+
+
+Combiner and Partitioner: Two optional features of MapReduce:
+
+Combiner:  We can specify a class that acts on the output of a map task for each key.  One of the reason to implement a combiner is to aggregate the intermediate map output.  Then during the shuffle process, the number of bytes transferred over to the wire is reduced.  Transferring data over a network introduces significant latency, and so the less data put on wire the better.
+
+public class CarCombiner extends Reducer<Text, IntWritable, Text, LongWritable> {
+
+    @Override
+    protected void reduce(Text key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
+
+        long sum = 0;
+
+        for (IntWritable occurrence : values) {
+            sum += occurrence.get();
+        }
+
+        context.write(key, new LongWritable(sum));
+    }
+}
+
+Patitioner: A partitioner determines which partition a record's key maps to and destines the record for that partition.
+The default partition is HashPartitioner which hashes the record's key to determine the partition to assign the record/
+
+
+Resiliency:  The lure of MapReduce is the ability to run on cheap commodity hardware as there's a high probability of hardware and other infrastructure breaking down.
+
+Task Failure:  A map or a reduce task for a MapReduce job can fail. 
+Application Master processes can fail.  The YARN Resource Manager receives periodic heartbeats from ApplicationMaster and can detect when the ApplicationMaster fails.
+Node Manager also sends periodic heartbeat to the Resource Manager.  If the heartbeat isn't received by the RM it assumes the Node Manager is dead.
+The Resource Manager, like the rest of the components is also prone to failures.  However failure of the RM is critical because if it goes down, we cannot launch new tasks, failed tasks or ApplicationsMasters.  Zookeeper keeps information about running applications.  When a stand-by RM becomes active it reads the information to reconstruct the state before the other RM's went down.  The applications are restarted by the newly active RM.  Built in resiliency mechanimsm allows the applications to recover the completed tasks as described earlier.
